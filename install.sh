@@ -99,7 +99,7 @@ generate_secure_password() {
 generate_docker_compose() {
     log "INFO" "生成 Docker Compose 配置..."
     
-    cat > docker-compose.yml << EOF
+    cat > docker-compose.yml << 'EOF'
 version: '3.8'
 
 services:
@@ -211,34 +211,34 @@ generate_php_dockerfile() {
     log "INFO" "生成 PHP Dockerfile..."
     
     mkdir -p php
-    cat > php/Dockerfile << EOF
+    cat > php/Dockerfile << 'EOF'
 FROM php:${PHP_VERSION}-fpm
 
 # 安装基础依赖
-RUN apt-get update && apt-get install -y \\
-    libpq-dev \\
-    libzip-dev \\
-    zip \\
-    unzip \\
-    git \\
+RUN apt-get update && apt-get install -y \
+    libpq-dev \
+    libzip-dev \
+    zip \
+    unzip \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 # 安装 PHP 扩展
-RUN docker-php-ext-install \\
-    pdo_pgsql \\
-    pgsql \\
-    zip \\
+RUN docker-php-ext-install \
+    pdo_pgsql \
+    pgsql \
+    zip \
     opcache
 
 # 安装 Redis 扩展
 RUN pecl install redis && docker-php-ext-enable redis
 
 # 配置 OPcache
-RUN echo "opcache.enable=1" >> /usr/local/etc/php/conf.d/opcache.ini \\
-    && echo "opcache.memory_consumption=128" >> /usr/local/etc/php/conf.d/opcache.ini \\
-    && echo "opcache.interned_strings_buffer=8" >> /usr/local/etc/php/conf.d/opcache.ini \\
-    && echo "opcache.max_accelerated_files=4000" >> /usr/local/etc/php/conf.d/opcache.ini \\
-    && echo "opcache.revalidate_freq=60" >> /usr/local/etc/php/conf.d/opcache.ini \\
+RUN echo "opcache.enable=1" >> /usr/local/etc/php/conf.d/opcache.ini \
+    && echo "opcache.memory_consumption=128" >> /usr/local/etc/php/conf.d/opcache.ini \
+    && echo "opcache.interned_strings_buffer=8" >> /usr/local/etc/php/conf.d/opcache.ini \
+    && echo "opcache.max_accelerated_files=4000" >> /usr/local/etc/php/conf.d/opcache.ini \
+    && echo "opcache.revalidate_freq=60" >> /usr/local/etc/php/conf.d/opcache.ini \
     && echo "opcache.fast_shutdown=1" >> /usr/local/etc/php/conf.d/opcache.ini
 
 WORKDIR /var/www/html
@@ -250,7 +250,7 @@ generate_pingora_dockerfile() {
     log "INFO" "生成 Pingora Dockerfile..."
     
     mkdir -p pingora
-    cat > pingora/Dockerfile << EOF
+    cat > pingora/Dockerfile << 'EOF'
 FROM rust:latest as builder
 
 WORKDIR /usr/src/pingora
@@ -269,7 +269,7 @@ generate_caddy_config() {
     log "INFO" "生成 Caddy 配置..."
     
     mkdir -p caddy
-    cat > caddy/Caddyfile << EOF
+    cat > caddy/Caddyfile << 'EOF'
 {
     email admin@example.com
 }
@@ -285,6 +285,25 @@ generate_caddy_config() {
     }
 }
 EOF
+}
+
+# 函数：显示建议
+show_recommendations() {
+    echo -e "${YELLOW}系统优化建议：${NC}"
+    echo "1. 系统限制优化："
+    echo "   - 调整文件描述符限制"
+    echo "   - 优化内核参数"
+    echo "2. 安全加固："
+    echo "   - 配置防火墙规则"
+    echo "   - 启用 fail2ban"
+    echo "   - 定期更新系统"
+    echo "3. 性能优化："
+    echo "   - 启用 PHP OPcache"
+    echo "   - 配置合适的 PHP-FPM 进程数"
+    echo "4. 监控建议："
+    echo "   - 设置资源监控"
+    echo "   - 配置日志轮转"
+    echo "   - 设置告警机制"
 }
 
 # 主函数
@@ -351,25 +370,6 @@ EOF
     
     # 显示下一步建议
     show_recommendations
-}
-
-# 函数：显示建议
-show_recommendations() {
-    echo -e "${YELLOW}系统优化建议：${NC}"
-    echo "1. 系统限制优化："
-    echo "   - 调整文件描述符限制"
-    echo "   - 优化内核参数"
-    echo "2. 安全加固："
-    echo "   - 配置防火墙规则"
-    echo "   - 启用 fail2ban"
-    echo "   - 定期更新系统"
-    echo "3. 性能优化："
-    echo "   - 启用 PHP OPcache"
-    echo "   - 配置合适的 PHP-FPM 进程数"
-    echo "4. 监控建议："
-    echo "   - 设置资源监控"
-    echo "   - 配置日志轮转"
-    echo "   - 设置告警机制"
 }
 
 # 执行主程序
