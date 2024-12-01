@@ -25,7 +25,8 @@ DEFAULT_MEMORY="2G"
 log() {
     local level=$1
     shift
-    echo -e "${TIMESTAMP} [$level] $*" | tee -a "$LOGFILE"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    echo -e "${timestamp} [$level] $*" | tee -a "$LOGFILE"
 }
 
 # 函数：错误处理
@@ -46,7 +47,7 @@ check_requirements() {
     if [[ "$(uname)" != "Linux" && "$(uname)" != "Darwin" ]]; then
         log "ERROR" "不支持的操作系统: $(uname)"
         exit 1
-    }
+    fi
     
     # 检查必要的程序
     local required_commands=("docker" "docker-compose" "curl" "openssl")
@@ -61,61 +62,232 @@ check_requirements() {
     if ! docker info >/dev/null 2>&1; then
         log "ERROR" "Docker 服务未运行"
         exit 1
-    }
+    fi
     
     log "INFO" "系统要求检查通过"
 }
 
 # 函数：显示菜单并获取选择
 show_menu() {
-    local prompt=$1
+    local title=$1
     shift
     local options=("$@")
-    echo -e "${BLUE}$prompt${NC}"
+    
+    echo -e "${BLUE}$title${NC}"
     for i in "${!options[@]}"; do
         echo "$((i+1)). ${options[i]}"
     done
+    
     local choice
     while true; do
         read -p "请选择 [1-${#options[@]}]: " choice
         if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "${#options[@]}" ]; then
+            echo "${options[$((choice-1))]}"
             break
         fi
         echo -e "${RED}无效的选择，请重试${NC}"
     done
-    echo "$choice"
 }
 
 # 函数：生成安全的随机密码
 generate_secure_password() {
-    openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 16
+    local length=${1:-16}
+    openssl rand -base64 48 | tr -dc 'a-zA-Z0-9' | head -c "$length"
 }
 
-# 函数：安装PHP扩展
-install_php_extensions() {
-    log "INFO" "开始安装 PHP 扩展..."
-    local extensions=("$@")
-    for ext in "${extensions[@]}"; do
-        log "INFO" "安装扩展: $ext"
-        case $ext in
-            "redis")
-                docker-php-ext-install redis || log "ERROR" "安装 redis 扩展失败"
-                ;;
-            "memcached")
-                docker-php-ext-install memcached || log "ERROR" "安装 memcached 扩展失败"
-                ;;
-            "mongodb")
-                docker-php-ext-install mongodb || log "ERROR" "安装 mongodb 扩展失败"
-                ;;
-            *)
-                docker-php-ext-install "$ext" || log "ERROR" "安装 $ext 扩展失败"
-                ;;
-        esac
-    done
-    log "INFO" "PHP 扩展安装完成"
+# 函数：生成 Docker Compose 配置
+generate_docker_compose() {
+    log "INFO" "生成 Docker Compose 配置..."
+    
+    cat > docker-compose.yml << EOF
+version: '3.8'
+
+services:
+  pingora:
+    build:
+      context: ./pingora
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    networks:
+      - app_network
+    depends_on:
+      - caddy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile
+      - ./www:/var/www/html
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - app_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:80"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  php:
+    build:
+      context: ./php
+      dockerfile: Dockerfile
+      args:
+        PHP_VERSION: ${PHP_VERSION}
+    volumes:
+      - ./www:/var/www/html
+      - ./php/custom.ini:/usr/local/etc/php/conf.d/custom.ini
+    networks:
+      - app_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "php-fpm", "-t"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  postgres:
+    image: postgres:${DB_VERSION:-15}-alpine
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_MAX_CONNECTIONS: 100
+      POSTGRES_SHARED_BUFFERS: 256MB
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    networks:
+      - app_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:${REDIS_VERSION:-7}-alpine
+    command: redis-server --requirepass ${REDIS_PASSWORD} --maxmemory 384mb --maxmemory-policy allkeys-lru --appendonly yes --appendfsync everysec
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - app_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+networks:
+  app_network:
+    driver: bridge
+
+volumes:
+  caddy_data:
+  caddy_config:
+  postgres_data:
+  redis_data:
+EOF
 }
 
-# 主程序开始
+# 函数：生成 PHP Dockerfile
+generate_php_dockerfile() {
+    log "INFO" "生成 PHP Dockerfile..."
+    
+    mkdir -p php
+    cat > php/Dockerfile << EOF
+FROM php:${PHP_VERSION}-fpm
+
+# 安装基础依赖
+RUN apt-get update && apt-get install -y \\
+    libpq-dev \\
+    libzip-dev \\
+    zip \\
+    unzip \\
+    git \\
+    && rm -rf /var/lib/apt/lists/*
+
+# 安装 PHP 扩展
+RUN docker-php-ext-install \\
+    pdo_pgsql \\
+    pgsql \\
+    zip \\
+    opcache
+
+# 安装 Redis 扩展
+RUN pecl install redis && docker-php-ext-enable redis
+
+# 配置 OPcache
+RUN echo "opcache.enable=1" >> /usr/local/etc/php/conf.d/opcache.ini \\
+    && echo "opcache.memory_consumption=128" >> /usr/local/etc/php/conf.d/opcache.ini \\
+    && echo "opcache.interned_strings_buffer=8" >> /usr/local/etc/php/conf.d/opcache.ini \\
+    && echo "opcache.max_accelerated_files=4000" >> /usr/local/etc/php/conf.d/opcache.ini \\
+    && echo "opcache.revalidate_freq=60" >> /usr/local/etc/php/conf.d/opcache.ini \\
+    && echo "opcache.fast_shutdown=1" >> /usr/local/etc/php/conf.d/opcache.ini
+
+WORKDIR /var/www/html
+EOF
+}
+
+# 函数：生成 Pingora Dockerfile
+generate_pingora_dockerfile() {
+    log "INFO" "生成 Pingora Dockerfile..."
+    
+    mkdir -p pingora
+    cat > pingora/Dockerfile << EOF
+FROM rust:latest as builder
+
+WORKDIR /usr/src/pingora
+RUN git clone https://github.com/cloudflare/pingora.git .
+RUN cargo build --release
+
+FROM debian:bullseye-slim
+COPY --from=builder /usr/src/pingora/target/release/pingora /usr/local/bin/
+EXPOSE 8080
+CMD ["pingora"]
+EOF
+}
+
+# 函数：生成 Caddy 配置
+generate_caddy_config() {
+    log "INFO" "生成 Caddy 配置..."
+    
+    mkdir -p caddy
+    cat > caddy/Caddyfile << EOF
+{
+    email admin@example.com
+}
+
+:80 {
+    root * /var/www/html
+    php_fastcgi php:9000
+    file_server
+    encode gzip
+    log {
+        output file /var/log/caddy/access.log
+        format json
+    }
+}
+EOF
+}
+
+# 主函数
 main() {
     log "INFO" "开始安装 Luxos Web..."
     
@@ -127,9 +299,9 @@ main() {
     mkdir -p www config/{nginx,php,templates} data/{mysql,redis} logs
     
     # 配置选择
-    PHP_VERSION=$(show_menu "选择 PHP 版本:" "8.2" "8.1" "8.0" "7.4")
-    DB_TYPE=$(show_menu "选择数据库类型:" "PostgreSQL" "MySQL")
-    CACHE_SYSTEM=$(show_menu "选择缓存系统:" "Redis" "Memcached" "无")
+    PHP_VERSION=$(show_menu "选择 PHP 版本" "8.2" "8.1" "8.0" "7.4")
+    DB_TYPE=$(show_menu "选择数据库类型" "PostgreSQL" "MySQL")
+    CACHE_SYSTEM=$(show_menu "选择缓存系统" "Redis" "Memcached" "无")
     
     # 生成随机密码
     DB_PASSWORD=$(generate_secure_password)
@@ -147,8 +319,10 @@ REDIS_PASSWORD=$REDIS_PASSWORD
 EOF
     
     # 生成配置文件
-    log "INFO" "生成配置文件..."
-    ./scripts/generate_docker_compose.sh
+    generate_docker_compose
+    generate_php_dockerfile
+    generate_pingora_dockerfile
+    generate_caddy_config
     
     # 启动服务
     log "INFO" "启动服务..."
