@@ -1,114 +1,252 @@
-version: '3.8'
+version: '3.9'
+
+name: luxos-web
+
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-healthcheck: &default-healthcheck
+  interval: 30s
+  timeout: 10s
+  retries: 3
+  start_period: 40s
 
 services:
   pingora:
     build:
       context: ./pingora
       dockerfile: Dockerfile
+      args:
+        RUST_VERSION: "1.75"
     ports:
       - "8080:8080"
     networks:
       - app_network
     depends_on:
-      - caddy
+      caddy:
+        condition: service_healthy
+      php:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
+      <<: *default-healthcheck
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          cpus: '0.25'
+          memory: 256M
 
   caddy:
-    image: caddy:2-alpine
+    image: caddy:2.7-alpine
     ports:
       - "80:80"
       - "443:443"
     volumes:
-      - ./caddy/Caddyfile:/etc/caddy/Caddyfile
-      - ./www:/var/www/html
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./www:/var/www/html:ro
       - caddy_data:/data
       - caddy_config:/config
+      - ./logs/caddy:/var/log/caddy
     networks:
       - app_network
     restart: unless-stopped
     healthcheck:
+      <<: *default-healthcheck
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:80"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-
-  php:
-    build:
-      context: ./php
-      dockerfile: Dockerfile
-    volumes:
-      - ./www:/var/www/html
-      - ./php/custom.ini:/usr/local/etc/php/conf.d/custom.ini
-    networks:
-      - app_network
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "php-fpm", "-t"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-
-  postgres:
-    image: postgres:15-alpine
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-appuser}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-secretpassword}
-      POSTGRES_DB: ${POSTGRES_DB:-appdb}
-      POSTGRES_MAX_CONNECTIONS: 100
-      POSTGRES_SHARED_BUFFERS: 256MB
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "127.0.0.1:5432:5432"
-    networks:
-      - app_network
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-appuser} -d ${POSTGRES_DB:-appdb}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "127.0.0.1:6379:6379"
-    volumes:
-      - redis_data:/data
-    networks:
-      - app_network
-    restart: unless-stopped
-    command: redis-server --requirepass ${REDIS_PASSWORD:-your_redis_password} --maxmemory 384mb --maxmemory-policy allkeys-lru --appendonly yes --appendfsync everysec
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+    logging: *default-logging
     deploy:
       resources:
         limits:
           cpus: '0.5'
           memory: 512M
         reservations:
+          cpus: '0.1'
+          memory: 128M
+
+  php:
+    build:
+      context: ./php
+      dockerfile: Dockerfile
+      args:
+        PHP_VERSION: ${PHP_VERSION:-8.3}
+        COMPOSER_VERSION: 2.6
+    volumes:
+      - ./www:/var/www/html
+      - ./php/custom.ini:/usr/local/etc/php/conf.d/custom.ini:ro
+      - ./logs/php:/var/log/php
+    networks:
+      - app_network
+    restart: unless-stopped
+    healthcheck:
+      <<: *default-healthcheck
+      test: ["CMD", "php-fpm", "-t"]
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
           cpus: '0.25'
           memory: 256M
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
+    environment:
+      PHP_MEMORY_LIMIT: ${PHP_MEMORY_LIMIT:-512M}
+      PHP_MAX_EXECUTION_TIME: ${PHP_MAX_EXECUTION_TIME:-30}
+      PHP_OPCACHE_ENABLE: 1
+      PHP_OPCACHE_MEMORY_CONSUMPTION: 256
+      PHP_OPCACHE_MAX_ACCELERATED_FILES: 20000
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${DB_USER:-appuser}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME:-appdb}
+      POSTGRES_MAX_CONNECTIONS: 100
+      POSTGRES_SHARED_BUFFERS: 256MB
+      POSTGRES_WORK_MEM: 16MB
+      POSTGRES_MAINTENANCE_WORK_MEM: 128MB
+      POSTGRES_EFFECTIVE_CACHE_SIZE: 1GB
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./config/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - ./logs/postgres:/var/log/postgresql
+    ports:
+      - "127.0.0.1:5432:5432"
+    networks:
+      - app_network
+    restart: unless-stopped
+    healthcheck:
+      <<: *default-healthcheck
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-appuser} -d ${DB_NAME:-appdb}"]
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+  redis:
+    image: redis:7.2-alpine
+    command: redis-server /usr/local/etc/redis/redis.conf
+    volumes:
+      - redis_data:/data
+      - ./config/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+      - ./logs/redis:/var/log/redis
+    ports:
+      - "127.0.0.1:6379:6379"
+    networks:
+      - app_network
+    restart: unless-stopped
+    healthcheck:
+      <<: *default-healthcheck
+      test: ["CMD", "redis-cli", "ping"]
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.1'
+          memory: 128M
+
+  prometheus:
+    image: prom/prometheus:v2.45.0
+    volumes:
+      - ./config/prometheus:/etc/prometheus
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    ports:
+      - "127.0.0.1:9090:9090"
+    networks:
+      - monitoring
+    restart: unless-stopped
+    healthcheck:
+      <<: *default-healthcheck
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+
+  grafana:
+    image: grafana/grafana:10.2.0
+    volumes:
+      - ./config/grafana:/etc/grafana/provisioning
+      - grafana_data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    ports:
+      - "127.0.0.1:3000:3000"
+    networks:
+      - monitoring
+    restart: unless-stopped
+    healthcheck:
+      <<: *default-healthcheck
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+
+  loki:
+    image: grafana/loki:2.9.0
+    volumes:
+      - ./config/loki:/etc/loki
+      - loki_data:/loki
+    ports:
+      - "127.0.0.1:3100:3100"
+    command: -config.file=/etc/loki/loki-config.yml
+    networks:
+      - monitoring
+    restart: unless-stopped
+    healthcheck:
+      <<: *default-healthcheck
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3100/ready"]
+
+  promtail:
+    image: grafana/promtail:2.9.0
+    volumes:
+      - ./config/promtail:/etc/promtail
+      - ./logs:/var/log/apps
+    command: -config.file=/etc/promtail/promtail-config.yml
+    networks:
+      - monitoring
+    restart: unless-stopped
+    depends_on:
+      - loki
 
 networks:
   app_network:
     driver: bridge
+    name: ${COMPOSE_PROJECT_NAME:-luxos}_app
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.20.0.0/16
+  monitoring:
+    driver: bridge
+    name: ${COMPOSE_PROJECT_NAME:-luxos}_monitoring
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.21.0.0/16
 
 volumes:
   caddy_data:
   caddy_config:
   postgres_data:
-  redis_data: 
+  redis_data:
+  prometheus_data:
+  grafana_data:
+  loki_data: 

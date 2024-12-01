@@ -54,17 +54,69 @@ check_requirements() {
     for cmd in "${required_commands[@]}"; do
         if ! command -v "$cmd" >/dev/null 2>&1; then
             log "ERROR" "缺少必要的程序: $cmd"
-            exit 1
+            if [[ "$cmd" == "docker" || "$cmd" == "docker-compose" ]]; then
+                if [[ "$(uname)" == "Linux" ]]; then
+                    log "INFO" "检测到缺少Docker..."
+                    if prompt_user "是否要安装Docker？" "y"; then
+                        # 检查是否为root用户
+                        if [ "$EUID" -ne 0 ]; then
+                            log "ERROR" "安装 Docker 需要root权限，请使用sudo运行此脚本"
+                            exit 1
+                        fi
+                        # 运行Docker安装脚本
+                        bash install_docker.sh
+                        # 检查Docker安装结果
+                        if ! command -v docker >/dev/null 2>&1; then
+                            log "ERROR" "Docker安装失败"
+                            exit 1
+                        fi
+                        log "INFO" "Docker安装成功"
+                    else
+                        log "ERROR" "Docker是必需的，无法继续安装"
+                        exit 1
+                    fi
+                else
+                    log "ERROR" "请手动安装 Docker"
+                    exit 1
+                fi
+            else
+                log "ERROR" "请安装必要的程序: $cmd"
+                exit 1
+            fi
         fi
     done
     
     # 检查 Docker 服务状态
     if ! docker info >/dev/null 2>&1; then
         log "ERROR" "Docker 服务未运行"
-        exit 1
+        if [[ "$(uname)" == "Linux" ]]; then
+            log "INFO" "尝试启动 Docker 服务..."
+            systemctl start docker
+            if ! docker info >/dev/null 2>&1; then
+                log "ERROR" "无法启动 Docker 服务"
+                exit 1
+            fi
+        else
+            exit 1
+        fi
     fi
     
     log "INFO" "系统要求检查通过"
+}
+
+# 函数：用户交互
+prompt_user() {
+    local question=$1
+    local default=${2:-"y"}
+    
+    while true; do
+        read -p "$question [y/n] ($default): " answer
+        case ${answer:-$default} in
+            [Yy]* ) return 0;;
+            [Nn]* ) return 1;;
+            * ) echo "请输入 y 或 n";;
+        esac
+    done
 }
 
 # 函数：显示菜单并获取选择
