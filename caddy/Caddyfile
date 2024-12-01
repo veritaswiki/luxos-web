@@ -1,0 +1,16 @@
+{
+    email your-email@domain.com
+}
+
+localhost {
+    root * /var/www/html
+    php_fastcgi php:9000
+    file_server
+    encode gzip
+    tls internal
+    
+    @notPhp {
+        not path *.php
+    }
+    reverse_proxy @notPhp pingora:8080
+} 

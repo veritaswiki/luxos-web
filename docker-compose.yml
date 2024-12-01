@@ -1,0 +1,114 @@
+version: '3.8'
+
+services:
+  pingora:
+    build:
+      context: ./pingora
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    networks:
+      - app_network
+    depends_on:
+      - caddy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile
+      - ./www:/var/www/html
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - app_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:80"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  php:
+    build:
+      context: ./php
+      dockerfile: Dockerfile
+    volumes:
+      - ./www:/var/www/html
+      - ./php/custom.ini:/usr/local/etc/php/conf.d/custom.ini
+    networks:
+      - app_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "php-fpm", "-t"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-appuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-secretpassword}
+      POSTGRES_DB: ${POSTGRES_DB:-appdb}
+      POSTGRES_MAX_CONNECTIONS: 100
+      POSTGRES_SHARED_BUFFERS: 256MB
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    networks:
+      - app_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-appuser} -d ${POSTGRES_DB:-appdb}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - app_network
+    restart: unless-stopped
+    command: redis-server --requirepass ${REDIS_PASSWORD:-your_redis_password} --maxmemory 384mb --maxmemory-policy allkeys-lru --appendonly yes --appendfsync everysec
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  app_network:
+    driver: bridge
+
+volumes:
+  caddy_data:
+  caddy_config:
+  postgres_data:
+  redis_data: 

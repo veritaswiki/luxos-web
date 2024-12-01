@@ -1,0 +1,57 @@
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 编辑器文件
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 依赖目录
+node_modules/
+vendor/
+
+# 环境文件
+.env
+.env.*
+!.env.example
+
+# 日志文件
+*.log
+logs/
+
+# 缓存文件
+*.cache
+.phpunit.result.cache
+
+# 备份文件
+backups/
+*.bak
+*.backup
+
+# 数据目录
+data/
+postgres_data/
+redis_data/
+caddy_data/
+caddy_config/
+
+# 临时文件
+tmp/
+temp/
+*.tmp
+
+# 编译文件
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+
+# SSL证书
+*.pem
+*.key
+*.crt
+*.cer
+*.der
+*.priv 

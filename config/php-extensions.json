@@ -1,0 +1,25 @@
+{
+    "basic": {
+        "pdo_pgsql": "PostgreSQL 驱动",
+        "pdo_mysql": "MySQL 驱动",
+        "mysqli": "MySQL 改进扩展",
+        "zip": "ZIP 压缩支持",
+        "gd": "图像处理",
+        "opcache": "PHP 字节码缓存"
+    },
+    "recommended": {
+        "redis": "Redis 缓存支持",
+        "memcached": "Memcached 缓存支持",
+        "intl": "国际化支持",
+        "soap": "SOAP 协议支持",
+        "xml": "XML 解析",
+        "mbstring": "多字节字符串"
+    },
+    "optional": {
+        "imagick": "ImageMagick 图像处理",
+        "xdebug": "调试工具",
+        "mongodb": "MongoDB 驱动",
+        "swoole": "异步编程框架",
+        "grpc": "gRPC 支持"
+    }
+} 

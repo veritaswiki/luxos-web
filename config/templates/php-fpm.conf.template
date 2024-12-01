@@ -1,0 +1,16 @@
+[www]
+user = www-data
+group = www-data
+listen = 9000
+pm = dynamic
+pm.max_children = {max_children}
+pm.start_servers = {start_servers}
+pm.min_spare_servers = {min_spare_servers}
+pm.max_spare_servers = {max_spare_servers}
+pm.max_requests = {max_requests}
+request_terminate_timeout = {request_timeout}
+php_admin_value[memory_limit] = {memory_limit}
+php_admin_value[upload_max_filesize] = {upload_max_filesize}
+php_admin_value[post_max_size] = {post_max_size}
+php_admin_value[max_execution_time] = {max_execution_time}
+php_admin_value[max_input_vars] = {max_input_vars} 
