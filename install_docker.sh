@@ -76,11 +76,81 @@ check_system_resources() {
     fi
 }
 
-# 安装基础依赖
+# 函数：修复 Docker 服务
+fix_docker_service() {
+    log "INFO" "尝试修复 Docker 服务..."
+    
+    # 检查并修复 containerd
+    if ! systemctl is-active containerd >/dev/null 2>&1; then
+        log "INFO" "正在重启 containerd 服务..."
+        systemctl stop containerd
+        rm -rf /run/containerd/containerd.sock
+        systemctl start containerd
+        sleep 2
+    fi
+    
+    # 检查 Docker 目录权限
+    log "INFO" "检查 Docker 目录权限..."
+    mkdir -p /var/lib/docker
+    chown root:root /var/lib/docker
+    chmod 701 /var/lib/docker
+    
+    # 检查并清理 Docker 系统文件
+    log "INFO" "清理 Docker 系统文件..."
+    rm -rf /var/lib/docker/runtimes
+    rm -f /var/run/docker.sock
+    rm -f /var/run/docker.pid
+    
+    # 重置 Docker daemon 配置
+    log "INFO" "重置 Docker daemon 配置..."
+    mkdir -p /etc/docker
+    cat > /etc/docker/daemon.json <<EOF
+{
+    "storage-driver": "overlay2",
+    "log-driver": "json-file",
+    "log-opts": {
+        "max-size": "10m",
+        "max-file": "3"
+    },
+    "registry-mirrors": [
+        "https://mirror.ccs.tencentyun.com",
+        "https://registry.docker-cn.com",
+        "https://docker.mirrors.ustc.edu.cn"
+    ]
+}
+EOF
+    
+    # 重新加载 systemd 配置
+    log "INFO" "重新加载 systemd 配置..."
+    systemctl daemon-reload
+    
+    # 重启 Docker 服务
+    log "INFO" "重启 Docker 服务..."
+    systemctl stop docker
+    sleep 2
+    systemctl start docker
+    sleep 5
+    
+    # 验证服务状态
+    if ! systemctl is-active docker >/dev/null 2>&1; then
+        log "ERROR" "Docker 服务仍然无法启动"
+        log "INFO" "请检查系统日志获取详细信息："
+        log "INFO" "1. journalctl -xe"
+        log "INFO" "2. dmesg | tail"
+        return 1
+    fi
+    
+    log "INFO" "Docker 服务修复完成"
+    return 0
+}
+
+# 函数：安装基础依赖
 install_prerequisites() {
     log "INFO" "安装基础依赖..."
     case $OS in
         *Ubuntu*|*Debian*)
+            # 完全卸载旧版本
+            apt-get remove -y docker docker-engine docker.io containerd runc || true
             apt-get update
             apt-get install -y \
                 apt-transport-https \
@@ -89,7 +159,10 @@ install_prerequisites() {
                 gnupg \
                 lsb-release \
                 iptables \
-                python3-pip
+                python3-pip \
+                systemd \
+                apparmor \
+                libseccomp2
             ;;
         *CentOS*|*Red*Hat*|*Rocky*|*AlmaLinux*)
             yum install -y \
@@ -161,68 +234,70 @@ install_docker() {
     esac
 }
 
-# 配置Docker
+# 函数：配置 Docker
 configure_docker() {
-    log "INFO" "配置Docker..."
+    log "INFO" "配置 Docker..."
     
-    # 创建docker组
-    groupadd -f docker
+    # 停止现有服务
+    systemctl stop docker || true
+    systemctl stop containerd || true
     
-    # 将当前用户添加到docker组
-    usermod -aG docker $SUDO_USER
+    # 清理旧配置
+    rm -rf /var/lib/docker
+    rm -rf /var/lib/containerd
     
-    # 启动Docker服务
-    systemctl enable docker
-    systemctl start docker
-    
-    # 配置Docker守护进程
+    # 创建必要的目录
     mkdir -p /etc/docker
+    mkdir -p /var/lib/docker
+    mkdir -p /var/lib/containerd
+    
+    # 设置目录权限
+    chown root:root /var/lib/docker
+    chown root:root /var/lib/containerd
+    chmod 701 /var/lib/docker
+    chmod 701 /var/lib/containerd
+    
+    # 配置 Docker daemon
     cat > /etc/docker/daemon.json <<EOF
 {
+    "storage-driver": "overlay2",
+    "log-driver": "json-file",
+    "log-opts": {
+        "max-size": "10m",
+        "max-file": "3"
+    },
     "registry-mirrors": [
         "https://mirror.ccs.tencentyun.com",
         "https://registry.docker-cn.com",
         "https://docker.mirrors.ustc.edu.cn"
     ],
+    "exec-opts": ["native.cgroupdriver=systemd"],
     "features": {
         "buildkit": true
     },
-    "experimental": true,
-    "builder": {
-        "gc": {
-            "enabled": true,
-            "defaultKeepStorage": "20GB"
-        }
-    },
-    "default-runtime": "runc",
-    "runtimes": {
-        "runc": {
-            "path": "runc"
-        }
-    },
-    "default-address-pools": [
-        {
-            "base": "172.17.0.0/16",
-            "size": 24
-        }
-    ],
-    "log-driver": "json-file",
-    "log-opts": {
-        "max-size": "100m",
-        "max-file": "3"
-    },
-    "storage-driver": "overlay2",
-    "storage-opts": [
-        "overlay2.override_kernel_check=true"
-    ],
-    "metrics-addr": "127.0.0.1:9323",
-    "dns": ["8.8.8.8", "8.8.4.4"]
+    "experimental": false,
+    "debug": false
 }
 EOF
     
-    # 重启Docker服务以应用配置
+    # 创建 systemd 目录
+    mkdir -p /etc/systemd/system/docker.service.d
+    
+    # 重新加载配置
     systemctl daemon-reload
-    systemctl restart docker
+    
+    # 启动服务
+    systemctl enable containerd
+    systemctl start containerd
+    sleep 2
+    systemctl enable docker
+    systemctl start docker
+    sleep 5
+    
+    # 如果服务启动失败，尝试修复
+    if ! systemctl is-active docker >/dev/null 2>&1; then
+        fix_docker_service
+    fi
 }
 
 # 安装Docker扩展工具

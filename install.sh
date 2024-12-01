@@ -43,60 +43,24 @@ trap 'error_handler ${LINENO} $?' ERR
 check_docker_service() {
     log "INFO" "检查 Docker 服务状态..."
     
-    # 检查 Docker 是否安装
-    if ! command -v docker >/dev/null 2>&1; then
-        log "ERROR" "未检测到 Docker 安装"
+    # 检查 containerd 服务
+    if ! systemctl is-active containerd >/dev/null 2>&1; then
+        log "WARN" "Containerd 服务未运行"
         return 1
     fi
     
-    # 检查操作系统类型
-    if [[ "$(uname)" == "Darwin" ]]; then
-        # macOS
-        if ! pgrep -f Docker.app >/dev/null 2>&1; then
-            log "WARN" "Docker Desktop 未运行"
-            log "INFO" "正在尝试启动 Docker Desktop..."
-            open -a Docker
-            # 等待 Docker 启动
-            local max_wait=60
-            local waited=0
-            while ! docker info >/dev/null 2>&1; do
-                if [ $waited -ge $max_wait ]; then
-                    log "ERROR" "Docker Desktop 启动超时"
-                    log "INFO" "请手动启动 Docker Desktop 应用程序"
-                    return 1
-                fi
-                sleep 1
-                waited=$((waited + 1))
-            done
-            log "INFO" "Docker Desktop 已启动"
-        fi
-    elif [[ "$(uname)" == "Linux" ]]; then
-        # Linux
-        if ! systemctl is-active docker >/dev/null 2>&1; then
-            log "WARN" "Docker 服务未运行"
-            log "INFO" "正在尝试启动 Docker 服务..."
-            if ! sudo systemctl start docker; then
-                log "ERROR" "Docker 服务启动失败"
-                log "INFO" "请尝试以下步骤："
-                log "INFO" "1. 运行 'sudo systemctl status docker' 查看详细错误信息"
-                log "INFO" "2. 运行 'sudo journalctl -xeu docker.service' 查看日志"
-                log "INFO" "3. 确保 Docker 正确安装：sudo apt-get install --reinstall docker-ce docker-ce-cli containerd.io"
-                log "INFO" "4. 检查系统日志：sudo dmesg | grep docker"
-                return 1
-            fi
-        fi
-    else
-        log "ERROR" "不支持的操作系统：$(uname)"
+    # 检查 Docker 服务
+    if ! systemctl is-active docker >/dev/null 2>&1; then
+        log "WARN" "Docker 服务未运行"
         return 1
     fi
     
-    # 最后验证 Docker 是否正常运行
+    # 验证 Docker 功能
     if ! docker info >/dev/null 2>&1; then
-        log "ERROR" "Docker 服务无法正常运行"
+        log "ERROR" "Docker 服务无法正常工作"
         return 1
     fi
     
-    log "INFO" "Docker 服务运行正常"
     return 0
 }
 
@@ -182,6 +146,12 @@ check_requirements() {
         exit 1
     fi
     
+    # 检查是否为 root 用户
+    if [ "$EUID" -ne 0 ]; then
+        log "ERROR" "请使用 root 权限运行此脚本"
+        exit 1
+    fi
+    
     # 检查必要的程序
     local required_commands=("curl" "openssl")
     for cmd in "${required_commands[@]}"; do
@@ -195,9 +165,40 @@ check_requirements() {
     if ! command -v docker >/dev/null 2>&1; then
         log "ERROR" "缺少 Docker"
         if prompt_user "是否要安装 Docker？" "y"; then
-            install_docker
+            # 完全卸载旧版本
+            if [[ "$(uname)" == "Linux" ]]; then
+                log "INFO" "清理旧版本 Docker..."
+                apt-get remove -y docker docker-engine docker.io containerd runc || true
+                rm -rf /var/lib/docker
+                rm -rf /var/lib/containerd
+            fi
+            
+            # 安装新版本
+            if ! bash install_docker.sh; then
+                log "ERROR" "Docker 安装失败"
+                exit 1
+            fi
+            
+            # 验证安装
+            if ! command -v docker >/dev/null 2>&1; then
+                log "ERROR" "Docker 命令未找到"
+                exit 1
+            fi
         else
             log "ERROR" "Docker 是必需的，无法继续安装"
+            exit 1
+        fi
+    fi
+    
+    # 检查 Docker 服务状态
+    if ! check_docker_service; then
+        log "ERROR" "Docker 服务检查失败"
+        if prompt_user "是否尝试修复 Docker 服务？" "y"; then
+            if ! fix_docker_service; then
+                log "ERROR" "Docker 服务修复失败"
+                exit 1
+            fi
+        else
             exit 1
         fi
     fi
@@ -206,36 +207,16 @@ check_requirements() {
     if ! command -v docker-compose >/dev/null 2>&1; then
         log "INFO" "正在安装 Docker Compose..."
         if [[ "$(uname)" == "Linux" ]]; then
-            # 安装最新版本的 Docker Compose
             COMPOSE_VERSION=$(curl -s https://api.github.com/repos/docker/compose/releases/latest | grep 'tag_name' | cut -d'"' -f4)
-            sudo curl -L "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-            sudo chmod +x /usr/local/bin/docker-compose
+            curl -L "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+            chmod +x /usr/local/bin/docker-compose
             
             if ! command -v docker-compose >/dev/null 2>&1; then
                 log "ERROR" "Docker Compose 安装失败"
                 exit 1
             fi
         else
-            log "INFO" "在 macOS 上，Docker Compose 应该随 Docker Desktop 一起安装"
-            exit 1
-        fi
-    fi
-    
-    # 检查 Docker 服务状态
-    if ! check_docker_service; then
-        exit 1
-    fi
-    
-    # 验证 Docker 权限
-    if ! docker ps >/dev/null 2>&1; then
-        log "ERROR" "当前用户没有运行 Docker 的权限"
-        if [[ "$(uname)" == "Linux" ]]; then
-            log "INFO" "正在将当前用户添加到 docker 组..."
-            sudo usermod -aG docker $USER
-            log "INFO" "请注销并重新登录以使权限生效"
-            exit 1
-        else
-            log "ERROR" "请检查 Docker Desktop 权限设置"
+            log "ERROR" "请手动安装 Docker Compose"
             exit 1
         fi
     fi
