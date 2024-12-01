@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: 验证 Docker Compose 文件
+      run: docker-compose config
+    
+    - name: 检查脚本语法
+      run: |
+        for script in $(find . -name "*.sh"); do
+          bash -n "$script"
+        done
+    
+    - name: 构建 Docker 镜像
+      run: docker-compose build
+    
+    - name: 启动服务
+      run: |
+        cp .env.example .env
+        docker-compose up -d
+        sleep 30
+    
+    - name: 检查服务状态
+      run: docker-compose ps
+    
+    - name: 检查日志
+      if: always()
+      run: docker-compose logs
+    
+    - name: 清理
+      if: always()
+      run: docker-compose down -v 
